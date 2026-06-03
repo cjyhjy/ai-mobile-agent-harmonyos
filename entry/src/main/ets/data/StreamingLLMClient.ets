@@ -37,9 +37,19 @@ export class StreamingLLMClient {
     this.prefs = await preferences.getPreferences(context, 'agent_prefs')
     this.model = await this.prefs.get('model_name', 'deepseek-chat') as string
     this.apiKey = await this.prefs.get('api_key', '') as string
+    // 加载模型专属 Key
+    const modelKey = await this.prefs.get('api_key_' + this.model, '') as string
+    if (modelKey) this.apiKey = modelKey
   }
 
   setModel(name: string) { this.model = name }
+
+  async loadModelKey(name: string): Promise<void> {
+    if (!this.prefs) return
+    const key = await this.prefs.get('api_key_' + name, '') as string
+    if (key) this.apiKey = key
+  }
+
   setApiKey(key: string) { this.apiKey = key }
 
   async streamChat(userMsg: string, history: Array<[string, string]>,
@@ -51,14 +61,16 @@ export class StreamingLLMClient {
 
     const modelInfo = MODELS.find(m => m.name === this.model) || MODELS[0]
     const sysPrompt = '你是智能手机助手，能聊天也能帮执行手机任务。用中文回复，支持Markdown。'
+
     let msgs = `{"role":"system","content":"${sysPrompt}"}`
-    for (const [role, content] of history.slice(-10)) {
+    const recentHistory = history.length > 10 ? history.slice(history.length - 10) : history
+    for (const [role, content] of recentHistory) {
       const esc = content.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')
       msgs += `,{"role":"${role}","content":"${esc}"}`
     }
     const escUser = userMsg.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')
     msgs += `,{"role":"user","content":"${escUser}"}`
-    const body = `{"model":"${this.model}","messages":[${msgs}],"stream":true}`
+    const body = `{"model":"${this.model}","messages":[${msgs}],"stream":false}`
 
     callback({ type: StreamEvent.THINKING } as StreamEvent)
 
@@ -68,48 +80,43 @@ export class StreamingLLMClient {
         method: http.RequestMethod.POST,
         header: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.apiKey}` },
         extraData: body,
-        expectDataType: http.HttpDataType.STRING,
-        usingProtocol: http.HttpProtocol.HTTP2_0
+        expectDataType: http.HttpDataType.STRING
       })
 
       if (resp.responseCode !== 200) {
-        callback({ type: StreamEvent.ERROR, message: `API ${resp.responseCode}` } as StreamEvent)
+        const errMsg = `API ${resp.responseCode}: ${(resp.result as string).substring(0, 200)}`
+        callback({ type: StreamEvent.ERROR, message: errMsg } as StreamEvent)
         return
       }
 
-      // 解析 SSE 流
+      // 非流式：解析完整响应
       const text = resp.result as string
-      const lines = text.split('\n')
-      let fullText = ''
-      let lastEmit = 0
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const data = line.substring(6).trim()
-        if (data === '[DONE]') break
-        try {
-          const obj = JSON.parse(data)
-          const content = obj.choices?.[0]?.delta?.content || ''
-          if (content) {
-            fullText += content
-            const now = Date.now()
-            if (now - lastEmit >= 50 || fullText.length < 30) {
-              lastEmit = now
-              callback({ type: StreamEvent.CHUNK, delta: content, fullText: fullText } as StreamEvent)
+      try {
+        const obj = JSON.parse(text)
+        const content = obj.choices?.[0]?.message?.content || ''
+        if (content) {
+          // 模拟逐字显示
+          let displayed = ''
+          for (let i = 0; i < content.length; i++) {
+            displayed += content[i]
+            if (i % 3 === 0 || i === content.length - 1) {
+              callback({ type: StreamEvent.CHUNK, delta: content[i], fullText: displayed } as StreamEvent)
             }
           }
-        } catch (_) {}
-      }
-
-      if (fullText) {
-        callback({ type: StreamEvent.CHUNK, delta: '', fullText: fullText } as StreamEvent)
-        callback({
-          type: StreamEvent.DONE,
-          fullText: fullText,
-          delta: parseResponse(fullText).reply
-        } as StreamEvent)
-      } else {
-        callback({ type: StreamEvent.ERROR, message: '空响应' } as StreamEvent)
+          callback({ type: StreamEvent.CHUNK, delta: '', fullText: displayed } as StreamEvent)
+          const parsed = parseResponse(content)
+          callback({ type: StreamEvent.DONE, fullText: content, delta: parsed.reply } as StreamEvent)
+        } else {
+          callback({ type: StreamEvent.ERROR, message: '空响应' } as StreamEvent)
+        }
+      } catch (_) {
+        // 非 JSON 响应，直接当文本
+        if (text) {
+          callback({ type: StreamEvent.CHUNK, delta: text, fullText: text } as StreamEvent)
+          callback({ type: StreamEvent.DONE, fullText: text, delta: text } as StreamEvent)
+        } else {
+          callback({ type: StreamEvent.ERROR, message: '空响应' } as StreamEvent)
+        }
       }
     } catch (e) {
       callback({ type: StreamEvent.ERROR, message: `请求失败: ${e.message}` } as StreamEvent)

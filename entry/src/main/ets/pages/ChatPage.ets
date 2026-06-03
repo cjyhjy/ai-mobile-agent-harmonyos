@@ -1,5 +1,6 @@
 import { StreamingLLMClient, StreamEvent, MODELS } from '../data/StreamingLLMClient'
 import { preferences } from '@kit.ArkData'
+import { promptAction } from '@kit.ArkUI'
 
 interface ChatMessage {
   text: string
@@ -14,7 +15,6 @@ struct ChatPage {
   @State inputText: string = ''
   @State messages: ChatMessage[] = []
   @State isProcessing: boolean = false
-  @State streamingText: string = ''
   @State errorMsg: string = ''
   @State selectedModel: string = 'deepseek-chat'
   @State showModelPicker: boolean = false
@@ -27,7 +27,8 @@ struct ChatPage {
   async aboutToAppear() {
     await this.client.init(getContext(this))
     const p = await preferences.getPreferences(getContext(this), 'agent_prefs')
-    this.selectedModel = (await p.get('model_name', 'deepseek-chat')) as string
+    const saved = await p.get('model_name', 'deepseek-chat') as string
+    this.selectedModel = saved
   }
 
   build() {
@@ -38,16 +39,16 @@ struct ChatPage {
           Text('🤖 AI 手机智能体').fontSize(18).fontWeight(FontWeight.Bold).fontColor(Color.White)
           Blank()
           Row() {
-            Text(this.selectedModel.substring(0, 12)).fontSize(11).fontColor(Color.White)
+            Text(this.selectedModel.substring(0, 12)).fontSize(11).fontColor(Color.White).maxLines(1)
             Text(' ▼').fontSize(10).fontColor(Color.White)
           }
-          .onClick(() => { this.showModelPicker = !this.showModelPicker })
+          .onClick(() => { this.showModelPicker = true })
           .padding({ left: 8, right: 8, top: 4, bottom: 4 })
           .borderRadius(12).backgroundColor('#FFFFFF20')
         }
         .width('100%').height(56).backgroundColor('#6366F1').padding({ left: 16, right: 16 })
 
-        // Message List
+        // Messages
         List() {
           if (this.messages.length === 0) {
             ListItem() {
@@ -111,7 +112,7 @@ struct ChatPage {
       }
       .width('100%').height('100%').backgroundColor('#0F172A')
 
-      // Model Picker Overlay
+      // Model Picker
       if (this.showModelPicker) {
         Column() {
           Column() {
@@ -123,7 +124,7 @@ struct ChatPage {
                     Radio({ value: m.name, group: 'model' }).checked(m.name === this.selectedModel)
                     Column() {
                       Text(m.name).fontSize(14).fontColor(Color.White)
-                      Text(m.provider + ' · ' + m.endpoint).fontSize(10).fontColor('#64748B')
+                      Text(`${m.provider} · ${m.endpoint}`).fontSize(10).fontColor('#64748B')
                     }.margin({ left: 8 }).layoutWeight(1)
                   }
                   .padding(12)
@@ -134,11 +135,10 @@ struct ChatPage {
             .layoutWeight(1)
             Button('关闭').onClick(() => { this.showModelPicker = false }).margin(16)
           }
-          .width('100%').height('60%').backgroundColor('#1E293B')
+          .width('100%').height('55%').backgroundColor('#1E293B')
           .borderRadius({ topLeft: 16, topRight: 16 })
         }
-        .width('100%').height('100%')
-        .justifyContent(FlexAlign.End)
+        .width('100%').height('100%').justifyContent(FlexAlign.End)
         .onClick(() => { this.showModelPicker = false })
       }
 
@@ -147,6 +147,7 @@ struct ChatPage {
         Column() {
           Column() {
             Text('配置 API Key').fontSize(18).fontColor(Color.White).padding(24)
+            Text(`为 ${this.selectedModel} 配置`).fontSize(12).fontColor('#94A3B8').padding({ bottom: 12 })
             TextInput({ placeholder: '输入 API Key', text: this.apiKeyInput })
               .width('100%').height(44).backgroundColor('#334155').borderRadius(8)
               .onChange((v: string) => { this.apiKeyInput = v })
@@ -157,9 +158,9 @@ struct ChatPage {
           }
           .width('80%').padding(16).backgroundColor('#1E293B').borderRadius(16)
         }
-        .width('100%').height('100%')
-        .justifyContent(FlexAlign.Center)
+        .width('100%').height('100%').justifyContent(FlexAlign.Center)
         .backgroundColor('#00000080')
+        .onClick(() => { this.showApiKeyDialog = false })
       }
     }
     .width('100%').height('100%')
@@ -177,15 +178,18 @@ struct ChatPage {
 
     this.client.streamChat(cmd, this.history, (event: StreamEvent) => {
       if (event.type === StreamEvent.CHUNK) {
-        this.streamingText = event.fullText
         const idx = this.messages.findIndex(m => m.isThinking || m.isStreaming)
-        if (idx >= 0) this.messages[idx] = { text: event.fullText, isUser: false, isThinking: false, isStreaming: true }
+        if (idx >= 0) this.messages[idx] = {
+          text: event.fullText, isUser: false, isThinking: false, isStreaming: true
+        }
       }
       if (event.type === StreamEvent.DONE) {
         this.isProcessing = false
         this.history.push(['assistant', event.delta])
         const di = this.messages.findIndex(m => m.isThinking || m.isStreaming)
-        if (di >= 0) this.messages[di] = { text: event.delta, isUser: false, isThinking: false, isStreaming: false }
+        if (di >= 0) this.messages[di] = {
+          text: event.delta, isUser: false, isThinking: false, isStreaming: false
+        }
       }
       if (event.type === StreamEvent.ERROR) {
         this.isProcessing = false; this.errorMsg = event.message
@@ -195,18 +199,26 @@ struct ChatPage {
   }
 
   selectModel(name: string) {
-    this.selectedModel = name; this.showModelPicker = false
-    if (name !== 'deepseek-chat') { this.showApiKeyDialog = true }
+    this.showModelPicker = false
+    if (name !== 'deepseek-chat') {
+      this.selectedModel = name
+      this.showApiKeyDialog = true
+    } else {
+      this.selectedModel = name
+      this.client.setModel(name)
+    }
   }
 
   async saveApiKey() {
     if (this.apiKeyInput) {
       this.client.setApiKey(this.apiKeyInput)
+      this.client.setModel(this.selectedModel)
       const p = await preferences.getPreferences(getContext(this), 'agent_prefs')
       await p.put('api_key_' + this.selectedModel, this.apiKeyInput)
       await p.put('api_key', this.apiKeyInput)
       await p.put('model_name', this.selectedModel)
       await p.flush()
+      promptAction.showToast({ message: `${this.selectedModel} 已配置` })
     }
     this.showApiKeyDialog = false
   }

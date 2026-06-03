@@ -1,0 +1,7 @@
+node_modules/
+build/
+.idea/
+*.hap
+*.app
+local.properties
+.DS_Store

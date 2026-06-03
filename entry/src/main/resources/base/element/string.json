@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "AI 手机智能体 - 用自然语言指挥手机完成多步操作" },
+    { "name": "EntryAbility_desc", "value": "AI Mobile Agent 主入口" },
+    { "name": "EntryAbility_label", "value": "AI Mobile Agent" }
+  ]
+}

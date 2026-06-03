@@ -1,0 +1,13 @@
+{
+  "apiType": "stageMode",
+  "buildOption": {
+    "arkOptions": {
+      "runtimeOnly": []
+    }
+  },
+  "targets": [
+    {
+      "name": "default"
+    }
+  ]
+}
